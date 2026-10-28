@@ -1,0 +1,90 @@
+---
+description: Procedural release checklist — follow after every code change, version bump, or catalog update
+alwaysApply: true
+---
+
+# OCT release checklist
+
+Existing rules describe the end-state; this rule tells you **when** and **in what order** to act. Follow it whenever you modify runtime code, bump a version, update `community.yaml`, or deploy to a cluster.
+
+## After any code change that affects runtime behavior
+
+1. Bump `package.json` — **both** top-level `version` and `consolePlugin.version`.
+2. Rebuild and push the image for **both** OCP minors:
+   ```
+   yarn build
+   podman build -t quay.io/<org>/<plugin>:<semver>-ocp4.22 -f Containerfile .
+   podman push quay.io/<org>/<plugin>:<semver>-ocp4.22
+   podman tag  quay.io/<org>/<plugin>:<semver>-ocp4.22 quay.io/<org>/<plugin>:<semver>-ocp4.21
+   podman push quay.io/<org>/<plugin>:<semver>-ocp4.21
+   ```
+3. Add or update `versions[]` rows in storefront `catalog/community.yaml` — **one row per OCP minor**, each with the correct combined image tag (`<semver>-ocp<minor>`). The 4.21 row must point at the `-ocp4.21` tag, not the `-ocp4.22` tag.
+4. Update the image tag in `catalog/deploy/oct-<name>.yaml` if one exists.
+5. Do not `oc apply` or deploy unless asked.
+
+## After bumping a sidecar or companion image
+
+Extensions with sidecars (discovery-service, benchmark-runner, windows-builder-builder) have **independent version numbers** from the plugin. When you rebuild a sidecar:
+
+1. Push the sidecar image with both OCP minor tags.
+2. Update the sidecar `image:` reference in the parent module's `catalog/deploy/oct-<name>.yaml`.
+3. Rebuild the **storefront** image — deploy YAMLs are webpack-bundled.
+4. Check AGENTS.md in the extension repo for a "Companion images" section and update the version there.
+
+## Before declaring "done"
+
+1. **Run `scripts/validate-catalog.sh`** (storefront repo). It checks every image tag exists on the registry, both OCP minors are covered, and deploy-bundle tags match the catalog. Fix any failures before committing.
+2. **If deploying to a cluster:** after a storefront image update, always:
+   ```
+   oc delete configmap community-tools-cache -n oct-storefront
+   ```
+   `ensureCacheSeeded()` is seed-once — if the `community.yaml` key already exists in the ConfigMap, it returns immediately. Deleting forces re-seed from the new bundled YAML on the next page load.
+3. **Verify pods are Running** — not just that Add / `oc apply` succeeded. Check the plugin Deployment **and** every sidecar Deployment.
+4. **Seed the public API** — from `octools-stats-worker`, after the storefront PR is merged:
+   ```
+   DRY_RUN=1 TOOL=<id> CATALOG_PATH=<storefront>/catalog/community.yaml node seed.js
+   ADMIN_TOKEN=<admin token> TOOL=<id> CATALOG_PATH=<storefront>/catalog/community.yaml node seed.js
+   curl -s https://api.octools.net/v1/versions/<id>
+   ```
+   The API stores one row per OpenShift minor (`openshift` is a string). The admin token is a Cloudflare Worker secret held by maintainers; never put it in a file in a repo. Installed storefronts pick up new rows on their next catalog sync (hourly, on a Community Tools page load).
+5. **Tag the storefront release** — annotated `v<semver>` on the merge commit, pushed. Catalog rows reference it as `gitRef`.
+
+## Storefront and companion-carrying tools
+
+- **Every storefront version bump adds the storefront's own `oct-storefront` rows (both minors).** Without them installed storefronts are never offered the release. `validate-catalog.sh` enforces it.
+- **The storefront updates itself from `deploy/upgrade.yaml`**, generated from `deploy/install.yaml` by `scripts/gen-upgrade-yaml.py` (no Job, no ConfigMaps). Regenerate it whenever `install.yaml` changes; storefront rows must point `deployURL` at it.
+- **A tool whose bundle has companions** (a CRD or an extra Deployment) is installed from the bundle compiled into the storefront. Regenerate `catalog/deploy/oct-<name>.yaml` from the tool repo and **release the storefront in the same change**. Older storefronts hold such an update back ("update the storefront first"); on clusters, update the storefront before the tool.
+- **Upgrades converge** CRDs, (Cluster)Roles, bindings and the ConsolePlugin to the bundle, update every container image, and **add** env vars a new release needs without changing existing values. A setting that must change on existing installs needs a new env var name or a migration, not a changed default.
+- **Every image must pull anonymously**, including images that phase Jobs or companions use, and never a private `:latest`. A dev cluster with a registry pull secret hides private images; check from outside (`skopeo inspect --no-creds`, or `hack/check-images-public.sh` in oct-shift-on-shift-virt).
+- **No environment-specific names in code**: StorageClass, VolumeSnapshotClass, NAD and similar names differ per cluster (e.g. `odf-...` vs `ocs-...` on ODF). Resolve them from the cluster (by driver/provisioner) instead of hardcoding one lab's name.
+- **Never overwrite a published image tag**, including dev builds: use a separate dev tag (e.g. `:dev`) and pick the next version for a release.
+
+## OCP minor completeness
+
+- Every `versions[]` row **must** have a sibling row for the other supported minor.
+- Both image tags must exist and be **public** before committing `community.yaml`.
+- The 4.21 row's `image` field must end in `-ocp4.21`; the 4.22 row in `-ocp4.22`.
+
+## Storefront architecture (know what to restart)
+
+The `oct-storefront` namespace runs **two** Deployments with **different** images:
+
+| Deployment | Image | What it does |
+| --- | --- | --- |
+| `oct-storefront` | `oct-storefront:<semver>-ocp<minor>` | nginx serving the webpack plugin bundle (React UI + bundled catalog + deploy YAMLs) |
+| `catalog-service` | `oct-storefront-catalog:<semver>-ocp<minor>` | Go proxy for public API, fetch-yaml, stats forwarding |
+
+- Storefront code/catalog changes → rebuild and redeploy `oct-storefront` only.
+- Catalog-service Go code changes → rebuild and redeploy `catalog-service`.
+- Restarting one does **not** update the other.
+
+## Common mistakes this rule prevents
+
+| Mistake | What went wrong | Check |
+| --- | --- | --- |
+| Deploy YAML references unpublished sidecar tag | `ErrImagePull` / `ImagePullBackOff` | validate-catalog.sh |
+| Code committed but image not rebuilt | Users see old UI | Step 2 of "After code change" |
+| Catalog lists only one OCP minor | "No matching plugin image" on other cluster | OCP minor completeness |
+| Storefront updated but cache not cleared | Old tiles persist | Step 2 of "Before done" |
+| Wrong Deployment restarted | Catalog data unchanged | Architecture table |
+| 4.21 row points at 4.22 image tag | Wrong tag pulled on 4.21 cluster | OCP minor completeness |

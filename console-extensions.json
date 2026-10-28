@@ -1,0 +1,10 @@
+[
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/community-tools/storage/odf-macvlans",
+      "component": { "$codeRef": "OdfMacvlansPage" }
+    }
+  }
+]

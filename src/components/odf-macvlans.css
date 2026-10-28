@@ -1,0 +1,5 @@
+.odfm-ok { color: var(--pf-t--global--icon--color--status--success--default); }
+.odfm-error { color: var(--pf-t--global--icon--color--status--danger--default); }
+.odfm-running { color: var(--pf-t--global--icon--color--status--info--default); }
+.odfm-pending { color: var(--pf-t--global--icon--color--disabled); }
+.odfm-muted { color: var(--pf-t--global--text--color--subtle); margin-top: var(--pf-t--global--spacer--sm); }
