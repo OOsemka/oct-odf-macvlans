@@ -1,6 +1,6 @@
 {
   "name": "oct-odf-macvlans",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Community project. ODF Macvlans Console plugin: move ODF (Ceph) traffic onto dedicated macvlan public/cluster networks. Not officially supported by Red Hat.",
   "private": true,
   "license": "Apache-2.0",
@@ -38,7 +38,7 @@
   },
   "consolePlugin": {
     "name": "oct-odf-macvlans",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "displayName": "ODF Macvlans",
     "description": "Community project. Create macvlan public/cluster networks for OpenShift Data Foundation and switch the StorageCluster to Multus. Not officially supported by Red Hat.",
     "exposedModules": {

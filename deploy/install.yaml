@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
         - name: plugin
-          image: quay.io/cjanisze/oct-odf-macvlans:0.1.0-ocp4.22
+          image: quay.io/cjanisze/oct-odf-macvlans:0.1.1-ocp4.22
           ports:
             - containerPort: 9443
               protocol: TCP

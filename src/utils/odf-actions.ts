@@ -14,6 +14,9 @@ import {
 
 import {
   CephClusterModel,
+  ConfigMapModel,
+  RoleBindingModel,
+  RoleModel,
   ClusterServiceVersionModel,
   DeploymentModel,
   JobModel,
@@ -352,6 +355,65 @@ type JobStatus = K8sResourceCommon & { status?: { succeeded?: number; failed?: n
  * Ceph is on Multus it runs host checks only, as the tool recommends.
  * Returns the tool's output; throws with the output if the test fails.
  */
+/** Rook's validation tool marks its test objects as owned by this ConfigMap. */
+const VALIDATION_OWNER_CM = 'multus-validation-test-owner';
+/** Temporary grant the validation tool needs; created and removed around each run. */
+const VALIDATION_GRANT = 'oct-odf-macvlans-validation';
+
+async function deleteIfPresent(model: typeof JobModel, name: string): Promise<void> {
+  try {
+    const obj = (await k8sGet({ model, name, ns: ODF_NAMESPACE })) as K8sResourceCommon;
+    await k8sDelete({
+      model,
+      resource: obj,
+      json: { kind: 'DeleteOptions', apiVersion: 'v1', propagationPolicy: 'Background' },
+    });
+  } catch (e) {
+    if (errorCode(e) !== 404) throw e;
+  }
+}
+
+/** Removes a previous run's test objects (deleting the owner ConfigMap cascades to all of them). */
+async function cleanupValidationObjects(): Promise<void> {
+  await deleteIfPresent(ConfigMapModel, VALIDATION_OWNER_CM);
+  await poll('the previous validation test objects to be removed', 3 * 60_000, 5_000, async () => {
+    try {
+      await k8sGet({ model: ConfigMapModel, name: VALIDATION_OWNER_CM, ns: ODF_NAMESPACE });
+      return undefined;
+    } catch (e) {
+      return errorCode(e) === 404 ? true : undefined;
+    }
+  });
+}
+
+/**
+ * The validation tool sets blockOwnerDeletion on its test objects. OpenShift
+ * only allows that for an account that may update configmaps/finalizers, which
+ * the Rook operator's service account cannot. Grant exactly that, in
+ * openshift-storage, for the duration of the test.
+ */
+async function grantValidation(sa: string): Promise<void> {
+  const labels = { [MANAGED_BY_LABEL]: MANAGED_BY };
+  await createOrKeep(RoleModel, {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'Role',
+    metadata: { name: VALIDATION_GRANT, namespace: ODF_NAMESPACE, labels },
+    rules: [{ apiGroups: [''], resources: ['configmaps/finalizers'], verbs: ['update'] }],
+  } as K8sResourceCommon);
+  await createOrKeep(RoleBindingModel, {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'RoleBinding',
+    metadata: { name: VALIDATION_GRANT, namespace: ODF_NAMESPACE, labels },
+    roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: VALIDATION_GRANT },
+    subjects: [{ kind: 'ServiceAccount', name: sa, namespace: ODF_NAMESPACE }],
+  } as K8sResourceCommon);
+}
+
+async function revokeValidation(): Promise<void> {
+  await deleteIfPresent(RoleBindingModel, VALIDATION_GRANT).catch(() => undefined);
+  await deleteIfPresent(RoleModel, VALIDATION_GRANT).catch(() => undefined);
+}
+
 export async function runValidation(clusterNetwork: boolean, hostCheckOnly: boolean, progress: Progress): Promise<string> {
   const op = (await k8sGet({ model: DeploymentModel, name: 'rook-ceph-operator', ns: ODF_NAMESPACE })) as {
     spec?: { template?: { spec?: { serviceAccountName?: string; containers?: Array<{ image?: string }> } } };
@@ -361,41 +423,54 @@ export async function runValidation(clusterNetwork: boolean, hostCheckOnly: bool
   const sa = tpl?.serviceAccountName;
   if (!image || !sa) throw new Error('Could not read the image and service account of deployment rook-ceph-operator.');
   const labels = { [MANAGED_BY_LABEL]: MANAGED_BY };
-  progress(hostCheckOnly ? 'Starting the Multus host check' : 'Starting the Multus validation test');
-  const job = (await k8sCreate({
-    model: JobModel,
-    data: {
-      apiVersion: 'batch/v1',
-      kind: 'Job',
-      metadata: { generateName: 'oct-odf-macvlans-validate-', namespace: ODF_NAMESPACE, labels },
-      spec: {
-        backoffLimit: 0,
-        ttlSecondsAfterFinished: 3600,
-        template: {
-          metadata: { labels },
-          spec: {
-            serviceAccountName: sa,
-            restartPolicy: 'Never',
-            containers: [{ name: 'validate', image, command: ['rook'], args: validationArgs(clusterNetwork, hostCheckOnly, sa) }],
+  progress('Preparing the Multus validation test');
+  await cleanupValidationObjects();
+  await grantValidation(sa);
+  let ok = false;
+  let log = '';
+  let jobName = '';
+  try {
+    progress(hostCheckOnly ? 'Starting the Multus host check' : 'Starting the Multus validation test');
+    const job = (await k8sCreate({
+      model: JobModel,
+      data: {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { generateName: 'oct-odf-macvlans-validate-', namespace: ODF_NAMESPACE, labels },
+        spec: {
+          backoffLimit: 0,
+          ttlSecondsAfterFinished: 3600,
+          template: {
+            metadata: { labels },
+            spec: {
+              serviceAccountName: sa,
+              restartPolicy: 'Never',
+              containers: [{ name: 'validate', image, command: ['rook'], args: validationArgs(clusterNetwork, hostCheckOnly, sa) }],
+            },
           },
         },
-      },
-    } as K8sResourceCommon,
-  })) as JobStatus;
-  const jobName = job.metadata?.name as string;
-  const output = async () => {
-    const [pod] = await pods(jobName, 'job-name');
-    return pod ? podLog(pod.metadata.name, 'validate', 400).catch(() => '') : '';
-  };
-  const ok = await poll(`validation job ${jobName}`, 30 * 60_000, 10_000, async () => {
-    const cur = (await k8sGet({ model: JobModel, name: jobName, ns: ODF_NAMESPACE })) as JobStatus;
-    if (cur.status?.succeeded) return true;
-    if (cur.status?.failed) return false;
-    const last = (await output()).trim().split('\n').pop();
-    progress(`Validation job ${jobName}${last ? `: ${last}` : ''}`);
-    return undefined;
-  });
-  const log = await output();
+      } as K8sResourceCommon,
+    })) as JobStatus;
+    jobName = job.metadata?.name as string;
+    const output = async () => {
+      const [pod] = await pods(jobName, 'job-name');
+      return pod ? podLog(pod.metadata.name, 'validate', 400).catch(() => '') : '';
+    };
+    ok = await poll(`validation job ${jobName}`, 30 * 60_000, 10_000, async () => {
+      const cur = (await k8sGet({ model: JobModel, name: jobName, ns: ODF_NAMESPACE })) as JobStatus;
+      if (cur.status?.succeeded) return true;
+      if (cur.status?.failed) return false;
+      const last = (await output()).trim().split('\n').pop();
+      progress(`Validation job ${jobName}${last ? `: ${last}` : ''}`);
+      return undefined;
+    });
+    log = await output();
+  } finally {
+    await revokeValidation();
+    // A failed test leaves its objects running "for manual debugging"; the
+    // output is kept in the Job's pod log, so remove them.
+    if (!ok) await cleanupValidationObjects().catch(() => undefined);
+  }
   if (!ok) {
     const err = new Error(`The Multus validation test failed (job ${jobName}).${hostCheckOnly ? '' : ' Nothing was changed in ODF.'}`) as Error & { output?: string };
     err.output = log;

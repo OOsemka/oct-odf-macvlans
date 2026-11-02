@@ -14,7 +14,7 @@ Do not add Community Tools category nav here. Users open this page from the stor
 
 Display name is **ODF Macvlans**. No PVC, no sidecar, no RBAC in the bundle: every API call runs as the logged-in console user (cluster-admin) through the Console SDK proxy.
 
-**Current version:** `0.1.0` (package.json / consolePlugin.version).
+**Current version:** `0.1.1` (package.json / consolePlugin.version).
 
 ## What it does
 
@@ -23,7 +23,7 @@ Moves OpenShift Data Foundation (Ceph) traffic from the pod network onto dedicat
 1. Creates one `NodeNetworkConfigurationPolicy` per worker node (`oct-odf-macvlans-<node>`): VLAN interfaces `<iface>.<vlan>` plus a macvlan shim `odf-pub-shim` (mode bridge, promiscuous) with a static IP on the public network, so the host (CSI node plugin) can reach Ceph pods. Waits for each policy to be Available.
 2. Creates NADs `openshift-storage/odf-public-network` and `odf-cluster-network`: macvlan bridge + whereabouts (the only supported CNI/IPAM).
 3. Verifies every node reports the shim with its planned IP.
-4. Runs Rook's Multus validation tool (optional, on by default): a Job with the image and service account of `deploy/rook-ceph-operator` running `rook multus validation run`. It pulls `quay.io/nginx/nginx-unprivileged`.
+4. Runs Rook's Multus validation tool (optional, on by default): a Job with the image and service account of `deploy/rook-ceph-operator` running `rook multus validation run`. It pulls `quay.io/nginx/nginx-unprivileged`. The tool sets `blockOwnerDeletion` on its test objects, which OpenShift only allows with `update` on `configmaps/finalizers`; the Rook operator's account lacks it, so the page creates a Role/RoleBinding `oct-odf-macvlans-validation` (that one verb, `openshift-storage` only) before the Job and deletes it afterwards. A failed test's objects are removed by deleting `multus-validation-test-owner`.
 5. Patches the ODF `StorageCluster` (`ocs.openshift.io/v1`): `spec.network.provider: multus`, `selectors.{public,cluster}`, `addressRanges.{public,cluster}`.
 6. Waits until every OSD pod is Ready on the public network.
 7. Settles Ceph. While Rook rolls the OSDs, OSDs on the old and new networks can't heartbeat each other. Some get marked down more than `osd_max_markdown_count` times and their `ceph-osd` exits, but the pod stays Ready (Rook's wrapper sleeps). The tool finds them by their log, restarts them one at a time, and waits for a fresh CephCluster health report with no `OSD_DOWN` / `PG_AVAILABILITY`.

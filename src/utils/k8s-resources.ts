@@ -39,6 +39,9 @@ export const OperatorGroupModel = model('operators.coreos.com', 'v1', 'OperatorG
 export const SubscriptionModel = model('operators.coreos.com', 'v1alpha1', 'Subscription', 'subscriptions', true, 'SUB');
 export const DeploymentModel = model('apps', 'v1', 'Deployment', 'deployments', true, 'D');
 export const JobModel = model('batch', 'v1', 'Job', 'jobs', true, 'J');
+export const ConfigMapModel = model(undefined, 'v1', 'ConfigMap', 'configmaps', true, 'CM');
+export const RoleModel = model('rbac.authorization.k8s.io', 'v1', 'Role', 'roles', true, 'R');
+export const RoleBindingModel = model('rbac.authorization.k8s.io', 'v1', 'RoleBinding', 'rolebindings', true, 'RB');
 export const ClusterServiceVersionModel = model('operators.coreos.com', 'v1alpha1', 'ClusterServiceVersion', 'clusterserviceversions', true, 'CSV');
 
 /** For useK8sWatchResource groupVersionKind. */
