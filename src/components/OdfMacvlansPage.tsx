@@ -126,7 +126,6 @@ const STEPS = [
   'Wait for Ceph to settle (restarts OSDs that stopped)',
   'Restart MDS pods',
 ] as const;
-const VALIDATE_STEP = 3;
 /** Steps after the StorageCluster patch; they can be re-run, e.g. after a page reload. */
 const POST_SWITCH_FROM = 5;
 

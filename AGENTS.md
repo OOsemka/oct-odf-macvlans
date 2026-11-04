@@ -61,8 +61,9 @@ If NMState is missing, the page offers a one-click install (Subscription `kubern
 
 ```bash
 yarn install
-yarn test
-yarn build
+yarn verify   # ts-check, check-i18n, check-repo, test, build (same as CI)
 ```
+
+`yarn check-i18n --fix` adds missing translation keys. Contributor workflow and the maintainer-only release steps: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Do not `oc apply` or push images unless asked.
