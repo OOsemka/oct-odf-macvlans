@@ -56,3 +56,7 @@ yarn build
 ```
 
 Images: `quay.io/cjanisze/oct-odf-macvlans:<semver>-ocp<major.minor>`; publish both `-ocp4.21` and `-ocp4.22`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md): setup, `yarn verify`, testing on your own cluster, the project rules and what maintainers do at release.
